@@ -1,0 +1,160 @@
+# qt3d_viewer.py
+import sys
+import os
+from pathlib import Path
+
+from PySide6.QtWidgets import (
+    QApplication, QFileDialog, QMessageBox, QInputDialog, QLineEdit, QShortcut
+)
+from PySide6.QtGui import QColor, QKeySequence, QVector3D, QGuiApplication
+from PySide6.QtCore import QUrl
+from PySide6.Qt3DExtras import (
+    Qt3DWindow, QOrbitCameraController, QPhongMaterial
+)
+from PySide6.Qt3DCore import QEntity, QTransform
+from PySide6.Qt3DRender import QCamera, QDirectionalLight, QSceneLoader
+
+
+def choose_model_file(parent=None):
+    # 常見格式；實際可載入與否取決於平台上的 Qt3D/Assimp 支援
+    filters = "3D Models (*.obj *.fbx *.gltf *.glb *.dae *.stl);;All Files (*)"
+    fname, _ = QFileDialog.getOpenFileName(parent, "選取 3D 模型檔", "", filters)
+    return Path(fname) if fname else None
+
+
+class ModelViewer(Qt3DWindow):
+    def __init__(self, model_path: Path):
+        super().__init__()
+        self.model_path = model_path
+
+        self.setTitle(f"Qt3D 檢視器 - {self.model_path.name}")
+        self.defaultFrameGraph().setClearColor(QColor("#202124"))
+
+        # Root entity
+        self.root = QEntity()
+
+        # 簡單方向光
+        light_entity = QEntity(self.root)
+        light = QDirectionalLight(light_entity)
+        light.setWorldDirection(QVector3D(-1.0, -1.0, -1.0))
+        light.setColor(QColor("white"))
+        light.setIntensity(1.0)
+        light_entity.addComponent(light)
+
+        # 載入模型
+        self.model_entity = QEntity(self.root)
+        self.model_loader = QSceneLoader(self.model_entity)
+        self.model_transform = QTransform()
+        # 初始微縮，避免有些模型太大
+        self.model_transform.setScale(1.0)
+        self.model_entity.addComponent(self.model_loader)
+        self.model_entity.addComponent(self.model_transform)
+
+        # optional: 基本材質（有些格式會自帶材質，這個僅作保底）
+        self.fallback_mat = QPhongMaterial(self.model_entity)
+        self.model_entity.addComponent(self.fallback_mat)
+
+        if not self.load_model(self.model_path):
+            raise RuntimeError("模型載入失敗")
+
+        self.setRootEntity(self.root)
+
+        # 相機
+        cam: QCamera = self.camera()
+        cam.setPosition(QVector3D(0.0, 2.0, 6.0))
+        cam.setViewCenter(QVector3D(0.0, 0.5, 0.0))
+        cam.setUpVector(QVector3D(0.0, 1.0, 0.0))
+        cam.setNearPlane(0.1)
+        cam.setFarPlane(5000.0)
+
+        # 滑鼠軌道控制
+        self.cam_ctrl = QOrbitCameraController(self.root)
+        self.cam_ctrl.setLinearSpeed(50.0)
+        self.cam_ctrl.setLookSpeed(180.0)
+        self.cam_ctrl.setCamera(cam)
+
+        # 快捷鍵：Esc 退出、F2 重新命名
+        QShortcut(QKeySequence(Qt.Key_Escape), self, activated=self.close)
+        QShortcut(QKeySequence(Qt.Key_F2), self, activated=self.rename_current_file)
+
+        self.resize(960, 600)
+
+    def load_model(self, path: Path) -> bool:
+        url = QUrl.fromLocalFile(str(path))
+        ok = self.model_loader.setSource(url)
+        # setSource 沒有 bool 回傳，但若不支援格式常會載不到任何節點
+        # 我們透過 status 訊號/屬性判斷一次（此處簡化即刻檢查）
+        # 註：某些平台需稍晚才能得到正確狀態，最穩是連接 statusChanged 訊號
+        status = self.model_loader.status()
+        # 0=None, 1=Loading, 2=Ready, 3=Error
+        if status == QSceneLoader.Error:
+            return False
+        # 更新視窗標題
+        self.setTitle(f"Qt3D 檢視器 - {path.name}")
+        return True
+
+    def rename_current_file(self):
+        # 讓使用者輸入「新檔名」（不含路徑）
+        current_name = self.model_path.name
+        new_name, ok = QInputDialog.getText(
+            None,
+            "重新命名",
+            f"目前檔名：{current_name}\n請輸入新檔名（含副檔名）：",
+            QLineEdit.Normal,
+            current_name
+        )
+        if not ok or not new_name.strip():
+            return
+
+        new_name = new_name.strip()
+        target = self.model_path.with_name(new_name)
+
+        # 檢查是否同名、是否覆蓋
+        if target.exists():
+            choice = QMessageBox.question(
+                None, "覆蓋確認", f"檔案已存在：{target.name}\n是否覆蓋？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if choice != QMessageBox.Yes:
+                return
+
+        try:
+            os.replace(self.model_path, target)  # 可跨平台、允許覆蓋
+        except Exception as e:
+            QMessageBox.critical(None, "重新命名失敗", f"原因：{e}")
+            return
+
+        self.model_path = target
+        # 重新載入模型（因為路徑改了）
+        if not self.load_model(self.model_path):
+            QMessageBox.warning(None, "提醒", "重新載入模型失敗，但檔案已重新命名。")
+        else:
+            QMessageBox.information(None, "完成", f"已重新命名為：{self.model_path.name}")
+
+    # 若你偏好攔截 key event 也可覆寫 eventFilter/kePressEvent；
+    # 此範例用 QShortcut 已足夠。
+
+
+def main():
+    app = QApplication(sys.argv)
+    # 先選檔
+    # 註：在 macOS 上建議先確保有活躍的 GUI 應用再跳檔案對話框
+    dummy = Qt3DWindow()  # 只為了有個 parent，可不顯示
+    path = choose_model_file()
+    if not path:
+        return 0
+
+    viewer = None
+    try:
+        viewer = ModelViewer(path)
+    except RuntimeError:
+        QMessageBox.critical(None, "載入失敗", f"無法載入模型：{path.name}\n"
+                                "可能是不支援的格式，或缺少對應的 Qt3D/Assimp 外掛。")
+        return 1
+
+    viewer.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
