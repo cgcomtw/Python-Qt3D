@@ -1,0 +1,82 @@
+# qt3d_minimal.py
+# Qt3D 立方體 + 相機 + 軌道控制（PySide6）
+import sys
+
+from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QVector3D, QColor
+from PySide6.Qt3DExtras import (
+    Qt3DWindow,
+    QCuboidMesh,
+    QPhongMaterial,
+    QOrbitCameraController,
+)
+from PySide6.Qt3DCore import QEntity, QTransform
+from PySide6.Qt3DRender import QCamera, QDirectionalLight
+
+
+def build_scene():
+    # Root
+    root = QEntity()
+
+    # 立方體
+    cube = QEntity(root)
+    mesh = QCuboidMesh()
+    material = QPhongMaterial(root)
+    material.setDiffuse(QColor("#4aa3ff"))
+
+    transform = QTransform()
+    transform.setScale(1.0)  # 立方體大小
+
+    cube.addComponent(mesh)
+    cube.addComponent(material)
+    cube.addComponent(transform)
+
+    # 簡單光源
+    light_entity = QEntity(root)
+    light = QDirectionalLight(light_entity)
+    light.setWorldDirection(QVector3D(-1.0, -1.0, -1.0))  # 從右上往左下照
+    light.setColor(QColor("white"))
+    light.setIntensity(1.0)
+    light_entity.addComponent(light)
+
+    return root
+
+
+def main():
+    app = QApplication(sys.argv)
+
+    # 建立 Qt3D 視窗
+    view = Qt3DWindow()
+    view.defaultFrameGraph().setClearColor(QColor("#202124"))  # 深色背景
+    view.setTitle("Qt3D 最小範例：立方體 + 軌道控制")
+
+    root = build_scene()
+    view.setRootEntity(root)
+
+    # 相機設定
+    camera: QCamera = view.camera()
+    camera.setPosition(QVector3D(0.0, 2.0, 6.0))  # 相機位置
+    camera.setViewCenter(QVector3D(0.0, 0.0, 0.0))  # 注視中心
+    camera.setUpVector(QVector3D(0.0, 1.0, 0.0))
+    camera.setNearPlane(0.1)
+    camera.setFarPlane(1000.0)
+
+    # 滑鼠軌道控制（拖曳旋轉、滾輪縮放）
+    cam_ctrl = QOrbitCameraController(root)
+    cam_ctrl.setLinearSpeed(50.0)
+    cam_ctrl.setLookSpeed(180.0)
+    cam_ctrl.setCamera(camera)
+
+    view.resize(800, 600)
+    view.show()
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except ImportError as e:
+        # 若顯示找不到 Qt3D，請先安裝 PySide6-Qt3D
+        print("ImportError:", e)
+        print("請先安裝：pip install PySide6 PySide6-Qt3D")
